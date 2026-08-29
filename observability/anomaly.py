@@ -70,6 +70,48 @@ def mad_detector(current: float, history: Iterable[float], threshold: float = 3.
     }
 
 
+def _trend_residual_detector(
+    current: float, values: np.ndarray, expected_step: float, threshold: float = 3.5
+) -> dict[str, Any] | None:
+    """Compare the observed step (current - last baseline point) against the
+    history's own day-over-day steps, after removing an externally supplied
+    `expected_step` (context["trend"]) from both.
+
+    A metric that is genuinely trending (steadily growing/shrinking) will
+    keep failing a level-based median/MAD check forever, since "today" is
+    expected to differ from the bulk of history by design. Comparing *step*
+    residuals instead means a value that continues the known trend looks
+    normal, while a sudden acceleration, reversal, or flattening — a real
+    change in trend — still stands out. Returns None when there is not
+    enough history (<3 historical steps) for a robust residual baseline.
+    """
+    diffs = np.diff(values)
+    if diffs.size < 3:
+        return None
+    residuals = diffs - expected_step
+    median_r = float(np.median(residuals))
+    mad_r = float(np.median(np.abs(residuals - median_r)))
+    actual_step = float(current) - float(values[-1])
+    actual_residual = actual_step - expected_step
+
+    if mad_r == 0:
+        is_anomaly = actual_residual != median_r
+        score = float("inf") if is_anomaly else 0.0
+    else:
+        score = 0.6745 * abs(actual_residual - median_r) / mad_r
+        is_anomaly = score > threshold
+
+    return {
+        "is_anomaly": bool(is_anomaly),
+        "score": float(score),
+        "method": "auto:trend",
+        "reason": (
+            f"expected_step(trend)={expected_step}, actual_step={actual_step:.3f}, "
+            f"residual={actual_residual:.3f}, median_residual={median_r:.3f}, mad_residual={mad_r:.3f}"
+        ),
+    }
+
+
 def _auto_baseline(history: Iterable[float], context: dict[str, Any] | None) -> tuple[list[float], str]:
     """Pick the best available comparison baseline.
 
@@ -107,6 +149,10 @@ def detect_anomaly(
       degenerate (MAD==0, non-constant) baselines. `context["known_event"]`
       is surfaced in `reason` for triage but does not suppress the signal —
       a caller-supplied label should not silently mask a real incident.
+      `context["trend"]` (an expected step-over-step change, e.g. average
+      day-over-day growth) switches to a step-residual comparison instead of
+      a level comparison, so a metric that keeps following its known trend
+      is not flagged just for being far from history's raw level.
     """
     if method == "mad":
         return mad_detector(current, history)
@@ -130,6 +176,18 @@ def detect_anomaly(
             "method": "auto:insufficient_history",
             "reason": "; ".join(notes + ["insufficient_history"]),
         }
+
+    trend = context.get("trend")
+    if trend is not None:
+        try:
+            expected_step = float(trend)
+        except (TypeError, ValueError):
+            expected_step = None
+        if expected_step is not None:
+            trend_result = _trend_residual_detector(float(current), values, expected_step)
+            if trend_result is not None:
+                trend_result["reason"] = "; ".join(notes + [trend_result["reason"]])
+                return trend_result
 
     if values.size >= 5:
         # mad_detector already handles the mad==0 (constant-history) edge

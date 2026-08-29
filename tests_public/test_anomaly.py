@@ -46,3 +46,19 @@ def test_mad_zero_history_flags_any_deviation():
     result = detect_metric(10, [5, 5, 5, 5, 5], method="mad")
     assert result["is_anomaly"] is True
     assert detect_metric(5, [5, 5, 5, 5, 5], method="mad")["is_anomaly"] is False
+
+
+def test_value_following_known_trend_is_not_anomaly():
+    # A metric growing ~+20/day for a week is expected to keep growing by
+    # ~+20 tomorrow too. A level-based check alone would flag this (1140 is
+    # far from history's median), but context["trend"] tells `auto` to judge
+    # the *step*, not the raw level.
+    history = [1000, 1020, 1040, 1060, 1080, 1100, 1120]
+    result = detect_metric(1140, history, method="auto", context={"metric_name": "row_count", "trend": 20})
+    assert result["is_anomaly"] is False
+
+
+def test_trend_reversal_is_still_anomaly():
+    history = [1000, 1020, 1040, 1060, 1080, 1100, 1120]
+    result = detect_metric(850, history, method="auto", context={"metric_name": "row_count", "trend": 20})
+    assert result["is_anomaly"] is True
