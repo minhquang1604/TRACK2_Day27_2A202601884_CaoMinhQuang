@@ -31,21 +31,73 @@ def calculate_slo(target: float, bad_events: int, total_events: int) -> dict[str
     }
 
 
+#  Google SRE Workbook style thresholds (https://sre.google/workbook/alerting-on-slos/):
+#  a 14.4x burn rate exhausts a 30-day budget in ~1h if sustained; requiring
+#  a shorter window to confirm the longer window is what tells a real incident
+#  apart from a spike that self-resolves before eating meaningful budget.
+FAST_BURN_SHORT_THRESHOLD = 14.4
+FAST_BURN_LONG_THRESHOLD = 6.0
+ELEVATED_LONG_BURN_THRESHOLD = 1.0
+
+
 def evaluate_multiwindow_burn(
     *,
     short_window_burn: float,
     long_window_burn: float,
-    policy: str = "starter",
+    policy: str = "default",
 ) -> dict[str, Any]:
-    """TODO(student): implement a real multi-window burn-rate policy.
+    """Multi-window, multi-burn-rate SLO policy.
 
-    Starter intentionally never pages. Hidden evaluation contains cases that
-    require distinguishing sustained fast burn from a transient spike.
+    A short-window spike alone must not page: it can resolve on its own
+    before consuming a meaningful fraction of the larger window's error
+    budget (a "transient spike"). Paging requires BOTH windows to show a
+    fast burn at the same time -- that combination is what distinguishes a
+    sustained, budget-threatening incident from noise. A long window that is
+    elevated but not fast still surfaces as a non-paging warning, since slow
+    steady budget consumption is real even when nothing looks urgent yet.
     """
+    if short_window_burn >= FAST_BURN_SHORT_THRESHOLD and long_window_burn >= FAST_BURN_LONG_THRESHOLD:
+        return {
+            "page": True,
+            "severity": "critical",
+            "reason": (
+                f"sustained fast burn: short_window_burn={short_window_burn} >= "
+                f"{FAST_BURN_SHORT_THRESHOLD} and long_window_burn={long_window_burn} >= "
+                f"{FAST_BURN_LONG_THRESHOLD}"
+            ),
+            "short_window_burn": short_window_burn,
+            "long_window_burn": long_window_burn,
+        }
+
+    if short_window_burn >= FAST_BURN_SHORT_THRESHOLD:
+        return {
+            "page": False,
+            "severity": "warning",
+            "reason": (
+                f"transient spike: short_window_burn={short_window_burn} >= "
+                f"{FAST_BURN_SHORT_THRESHOLD} but long_window_burn={long_window_burn} < "
+                f"{FAST_BURN_LONG_THRESHOLD} (not sustained, no page)"
+            ),
+            "short_window_burn": short_window_burn,
+            "long_window_burn": long_window_burn,
+        }
+
+    if long_window_burn >= ELEVATED_LONG_BURN_THRESHOLD:
+        return {
+            "page": False,
+            "severity": "warning",
+            "reason": (
+                f"slow sustained burn: long_window_burn={long_window_burn} >= "
+                f"{ELEVATED_LONG_BURN_THRESHOLD} (ticket-worthy, not page-worthy)"
+            ),
+            "short_window_burn": short_window_burn,
+            "long_window_burn": long_window_burn,
+        }
+
     return {
         "page": False,
         "severity": "info",
-        "reason": "starter_policy_not_implemented",
+        "reason": "burn rate within budget on both windows",
         "short_window_burn": short_window_burn,
         "long_window_burn": long_window_burn,
     }

@@ -11,6 +11,13 @@ models:
       - name: customer_id
         data_tests:
           - not_null
+          # Referential integrity: every order should point at a known
+          # customer. A dangling customer_id would silently drop out of
+          # fct_daily_revenue's LEFT JOIN with no error today.
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
       - name: currency
         data_tests:
           - accepted_values:
@@ -27,3 +34,8 @@ models:
       - name: customer_id
         data_tests:
           - not_null
+      - name: tier
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['basic', 'silver', 'gold']

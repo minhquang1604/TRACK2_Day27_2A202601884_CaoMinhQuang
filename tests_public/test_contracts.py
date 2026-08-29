@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pandas as pd
 
@@ -8,6 +9,10 @@ CONTRACT = ROOT / "contracts" / "orders_contract.yaml"
 
 
 def healthy_df():
+    # created_at/updated_at are relative to "now" (not hardcoded literals) so
+    # this fixture stays fresh under the freshness check regardless of when
+    # the suite runs (contract: updated_at max_delay_minutes=30).
+    now = datetime.now(timezone.utc)
     return pd.DataFrame([
         {
             "order_id": 1,
@@ -15,8 +20,8 @@ def healthy_df():
             "amount": 10.0,
             "currency": "USD",
             "status": "completed",
-            "created_at": "2026-08-28T10:00:00Z",
-            "updated_at": "2026-08-28T10:05:00Z",
+            "created_at": (now - timedelta(minutes=10)).isoformat(),
+            "updated_at": (now - timedelta(minutes=5)).isoformat(),
         },
         {
             "order_id": 2,
@@ -24,8 +29,8 @@ def healthy_df():
             "amount": 20.0,
             "currency": "USD",
             "status": "pending",
-            "created_at": "2026-08-28T10:01:00Z",
-            "updated_at": "2026-08-28T10:06:00Z",
+            "created_at": (now - timedelta(minutes=9)).isoformat(),
+            "updated_at": (now - timedelta(minutes=4)).isoformat(),
         },
     ])
 
@@ -50,3 +55,23 @@ def test_invalid_currency_is_detected():
     df.loc[0, "currency"] = "BTC"
     issues = failed(validate_orders(df, CONTRACT))
     assert any(i["check"] == "accepted_values" and i["column"] == "currency" for i in issues)
+
+
+def test_type_drift_is_detected():
+    df = healthy_df()
+    df["amount"] = df["amount"].astype(object)
+    df.loc[0, "amount"] = "not-a-number"
+    issues = failed(validate_orders(df, CONTRACT))
+    type_issue = next(i for i in issues if i["check"] == "type" and i["column"] == "amount")
+    assert type_issue["severity"] == "critical"
+    assert type_issue["action"] == "block"
+
+
+def test_stale_updated_at_is_detected():
+    df = healthy_df()
+    stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    df["updated_at"] = stale
+    issues = failed(validate_orders(df, CONTRACT))
+    freshness_issue = next(i for i in issues if i["check"] == "freshness")
+    assert freshness_issue["column"] == "updated_at"
+    assert freshness_issue["action"] == "quarantine"  # contract severity=warning
