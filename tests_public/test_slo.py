@@ -23,6 +23,14 @@ def test_sustained_fast_burn_pages():
     assert result["severity"] == "critical"
 
 
+def test_sustained_burn_between_page_tiers_still_pages():
+    # 6x-14.4x on both windows is the SRE Workbook's second page tier (5% of
+    # the budget in 6h). Requiring 14.4 on the short window while only asking
+    # 6 on the long one would mix two tiers and silently never page here.
+    result = multiwindow_burn(short_window_burn=10.0, long_window_burn=8.0)
+    assert result["page"] is True
+
+
 def test_transient_spike_does_not_page():
     # Short window spikes, but the long window is still healthy: it will
     # likely self-resolve before it eats a meaningful chunk of the budget.

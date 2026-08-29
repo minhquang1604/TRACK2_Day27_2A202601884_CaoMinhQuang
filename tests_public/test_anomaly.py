@@ -13,6 +13,29 @@ def test_stable_value_is_not_anomaly():
     assert result["is_anomaly"] is False
 
 
+def test_documented_positional_signature_works():
+    # docs/STUDENT_API.md documents this as
+    # detect_metric(current, history, method="auto", context=None), so a
+    # caller following that signature positionally must not hit a TypeError.
+    history = [1000, 1010, 995, 1008, 1004, 1012, 998]
+    assert detect_metric(300, history, "zscore")["is_anomaly"] is True
+    assert detect_metric(300, history, "auto", {"metric_name": "row_count"})["is_anomaly"] is True
+
+
+def test_known_event_suppresses_expected_deviation():
+    # A caller announcing a known event (launch, promo, planned backfill) is
+    # saying the deviation is expected -- it must not page, but the measured
+    # score stays visible for auditing.
+    history = [1000, 1010, 995, 1008, 1004, 1012, 998]
+    result = detect_metric(3000, history, "auto", {"metric_name": "row_count", "known_event": "black_friday"})
+    assert result["is_anomaly"] is False
+    assert result["suppressed_by_known_event"] is True
+    assert result["score"] > 0
+
+    # No known event -> the same value is still a genuine anomaly.
+    assert detect_metric(3000, history, "auto", {"known_event": None})["is_anomaly"] is True
+
+
 def test_legit_saturday_volume_is_not_flagged_against_weekday_history():
     # A same-segment (Saturday-only) baseline is much lower than a typical
     # weekday. `auto` must compare against the segment supplied via context,

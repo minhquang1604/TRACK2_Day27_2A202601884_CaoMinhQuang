@@ -31,12 +31,19 @@ def calculate_slo(target: float, bad_events: int, total_events: int) -> dict[str
     }
 
 
-#  Google SRE Workbook style thresholds (https://sre.google/workbook/alerting-on-slos/):
-#  a 14.4x burn rate exhausts a 30-day budget in ~1h if sustained; requiring
-#  a shorter window to confirm the longer window is what tells a real incident
-#  apart from a spike that self-resolves before eating meaningful budget.
-FAST_BURN_SHORT_THRESHOLD = 14.4
-FAST_BURN_LONG_THRESHOLD = 6.0
+#  Google SRE Workbook thresholds (https://sre.google/workbook/alerting-on-slos/).
+#  Each alerting tier applies ONE burn rate to BOTH of its windows -- the long
+#  window decides whether the burn matters, the short window confirms it is
+#  still happening right now rather than already over:
+#    page  : 14.4x  (2% of a 30-day budget in 1h;  windows 1h  / 5m)
+#    page  :  6x    (5% in 6h;                     windows 6h  / 30m)
+#    ticket:  1x    (10% in 3 days;                windows 3d  / 6h)
+#  So anything at or above the 6x page tier on BOTH windows pages; pairing
+#  14.4 on one window with 6 on the other would mix two different tiers and
+#  silently never page a sustained 6-14x burn, which is itself a page-worthy
+#  incident under this policy.
+FAST_BURN_PAGE_THRESHOLD = 6.0
+FAST_BURN_CRITICAL_THRESHOLD = 14.4
 ELEVATED_LONG_BURN_THRESHOLD = 1.0
 
 
@@ -56,27 +63,33 @@ def evaluate_multiwindow_burn(
     elevated but not fast still surfaces as a non-paging warning, since slow
     steady budget consumption is real even when nothing looks urgent yet.
     """
-    if short_window_burn >= FAST_BURN_SHORT_THRESHOLD and long_window_burn >= FAST_BURN_LONG_THRESHOLD:
+    if short_window_burn >= FAST_BURN_PAGE_THRESHOLD and long_window_burn >= FAST_BURN_PAGE_THRESHOLD:
+        both_critical = (
+            short_window_burn >= FAST_BURN_CRITICAL_THRESHOLD
+            and long_window_burn >= FAST_BURN_CRITICAL_THRESHOLD
+        )
+        tier = FAST_BURN_CRITICAL_THRESHOLD if both_critical else FAST_BURN_PAGE_THRESHOLD
         return {
             "page": True,
             "severity": "critical",
             "reason": (
-                f"sustained fast burn: short_window_burn={short_window_burn} >= "
-                f"{FAST_BURN_SHORT_THRESHOLD} and long_window_burn={long_window_burn} >= "
-                f"{FAST_BURN_LONG_THRESHOLD}"
+                f"sustained fast burn: short_window_burn={short_window_burn} and "
+                f"long_window_burn={long_window_burn} both >= {tier} "
+                f"(burning the error budget fast and still ongoing)"
             ),
             "short_window_burn": short_window_burn,
             "long_window_burn": long_window_burn,
+            "burn_tier": tier,
         }
 
-    if short_window_burn >= FAST_BURN_SHORT_THRESHOLD:
+    if short_window_burn >= FAST_BURN_PAGE_THRESHOLD:
         return {
             "page": False,
             "severity": "warning",
             "reason": (
                 f"transient spike: short_window_burn={short_window_burn} >= "
-                f"{FAST_BURN_SHORT_THRESHOLD} but long_window_burn={long_window_burn} < "
-                f"{FAST_BURN_LONG_THRESHOLD} (not sustained, no page)"
+                f"{FAST_BURN_PAGE_THRESHOLD} but long_window_burn={long_window_burn} < "
+                f"{FAST_BURN_PAGE_THRESHOLD} (not sustained, no page)"
             ),
             "short_window_burn": short_window_burn,
             "long_window_burn": long_window_burn,

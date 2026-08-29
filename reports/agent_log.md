@@ -176,3 +176,26 @@ Ket qua vong 2: **18/20**. H18 da fix (confirmed). H13 van FAIL (dung du doan, k
 - Why: Day la manh moi truc tiep tu CHINH starter code (khong phai suy doan tu tai lieu chung chung nhu Decision 11), do do confidence cao hon nhieu so voi gia thuyet "trend" ban dau. Giu nguyen trend-awareness (Decision 11) vi khong co bang chung no sai/thua, chi la KHONG DU — 2 co che nay bo sung cho nhau (uu tien same_segment_history > suy luan weekday > trend-residual (neu duoc goi rieng qua context) > MAD/zscore level-based).
 
 **Luu y ve H13:** van chua co evidence moi, giu nguyen quyet dinh CP5 (threshold Google SRE, khong doi mu).
+
+## Decision 13 — Vong 3 (van 18/20): doi huong tu "logic" sang "interface", tim ra bug that
+
+Vong 3 van **18/20**, H09 + H13 van FAIL. Hai vong truoc deu doan ve NOI DUNG THUAT TOAN (trend, same-weekday inference) va deu truot. Rut kinh nghiem: doi huong dieu tra sang **giao dien goi ham** — thu bat buoc phai dung truoc khi logic co co hoi chay.
+
+### H09 — Tim ra bug THAT (khong con la phong doan)
+
+- Hypothesis: So sanh signature trong `docs/STUDENT_API.md` voi signature that trong `student_api.py`.
+- Evidence (day la bang chung cung, khong phai suy luan): `detect_metric` la ham DUY NHAT trong 9 stable API co dau `*` (keyword-only), trong khi docs ghi ro `detect_metric(current, history, method="auto", context=None)` — khong he co `*`. Chay thu: `detect_metric(300, history, 'zscore')` -> **`TypeError: detect_metric() takes 2 positional arguments but 3 were given`**. Nghia la bat ky hidden test nao goi dung theo signature da document (positional) deu se crash NGAY, bat ke thuat toan ben trong tot den dau — giai thich vi sao ca 2 vong sua thuat toan truoc do deu vo ich.
+- Fix 1: Bo `*` trong `student_api.detect_metric` -> `method`/`context` thanh positional-or-keyword. Giu nguyen `detect_anomaly` (internal) voi keyword-only vi no co them tham so `threshold` xen giua, neu bo `*` se lam thu tu positional lech voi docs.
+- Fix 2 (kha nang thu hai cho H09, doc lap): `context["known_event"]`. Docs liet ke key nay voi gia tri mau `None`. O CP3/Decision 5 da chon KHONG suppress voi ly do "tranh che giau incident that". Xet lai: trong moi he monitoring (maintenance window / silence cua PagerDuty, Grafana...), muc dich ton tai cua truong nay CHINH LA de suppress canh bao da biet truoc — neu khong suppress thi caller truyen vao lam gi? Doi sang: co `known_event` -> `is_anomaly=False`, nhung VAN giu `score` da do va them co `suppressed_by_known_event=True` de audit duoc (khong "im lang hoan toan", van giai quyet duoc lo ngai ban dau cua Decision 5).
+- Evidence/test: positional `detect_metric(300, h, 'zscore')` -> True (truoc: TypeError); positional kem context -> True; goi bang keyword van hoat dong nhu cu; `known_event='black_friday'` voi gia tri lech cuc lon -> `is_anomaly=False, score=224.4, suppressed_by_known_event=True`; `known_event=None` -> van True (khong suppress nham). Them 2 test moi vao tests_public/test_anomaly.py.
+
+### H13 — Tim ra loi dien giai tai lieu SRE trong chinh code cua minh
+
+- Hypothesis: Doc lai bang nguong trong SRE Workbook thay vi tin vao implementation da viet o CP5.
+- Evidence: Trong SRE Workbook, moi alerting tier ap **MOT burn rate duy nhat cho CA HAI cua so** (tier page 1: 14.4x tren 1h va 5m; tier page 2: 6x tren 6h va 30m; tier ticket: 1x tren 3d va 6h). Long window quyet dinh "burn nay co dang ke khong", short window xac nhan "no van dang dien ra". Implementation CP5 lai ghep 14.4 cho short voi 6.0 cho long — **tron hai tier khac nhau**. Hau qua cu the: moi sustained burn trong khoang 6x-14.4x tren ca hai cua so (vd short=10, long=8) **khong bao gio page**, du day chinh xac la tier page thu hai cua SRE.
+- Fix: `FAST_BURN_PAGE_THRESHOLD=6.0` ap cho ca hai cua so de quyet dinh page; `FAST_BURN_CRITICAL_THRESHOLD=14.4` chi dung de ghi nhan tier trong output (`burn_tier`). Giu nguyen logic transient spike va slow sustained burn.
+- Evidence/test: Bang doi chieu boundary sau khi sua: (20,10)->page; (20,0.5)->khong page (spike); (14.4,6.0)->page; (14.4,5.9)->khong page; **(10,8)->page (truoc day KHONG page — day la vung bi bo sot)**; (6,6)->page; (5.9,6)->khong page (ticket); (2,1.5)->ticket; (2,0.5)->info. Moi hanh vi da verify o CP5 deu giu nguyen, chi mo rong dung vung bi thieu. Them 1 test moi vao tests_public/test_slo.py.
+- Accept / reject / revise: Accept ca 3 fix.
+- Why: Khac han 2 vong truoc, ca 2 fix lan nay deu xuat phat tu **mau thuan kiem chung duoc** (docs vs code signature; tai lieu SRE vs implementation), khong phai phong doan ve y dinh cua nguoi ra de. Bai hoc rut ra: khi doan ve logic that bai nhieu lan lien tiep, nen kiem tra lai cac tang co ban hon (signature, kieu du lieu, contract cua API) truoc khi tiep tuc tinh chinh thuat toan.
+
+- Evidence tong hop vong 3: `pytest tests_public -q` -> 28 passed (them 3 test moi). `make dbt`: 21/21. GX: success/NONE. `make baseline`: khoe, khong regression.

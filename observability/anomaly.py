@@ -187,8 +187,11 @@ def detect_anomaly(
       a robust median/MAD statistic over mean/std whenever there is enough
       history (>=5 points), and falls back to z-score for short or
       degenerate (MAD==0, non-constant) baselines. `context["known_event"]`
-      is surfaced in `reason` for triage but does not suppress the signal —
-      a caller-supplied label should not silently mask a real incident.
+      (e.g. a launch, a promo, a planned backfill) suppresses the alert the
+      way a maintenance window does in any monitoring system: the deviation
+      was expected, so it must not page. The measured `score` is still
+      returned and `suppressed_by_known_event` records what happened, so the
+      signal stays auditable instead of vanishing.
       `context["trend"]` (an expected step-over-step change, e.g. average
       day-over-day growth) switches to a step-residual comparison instead of
       a level comparison, so a metric that keeps following its known trend
@@ -208,14 +211,27 @@ def detect_anomaly(
     if known_event:
         notes.append(f"known_event={known_event}")
 
+    def finalize(result: dict[str, Any], extra_notes: list[str] | None = None) -> dict[str, Any]:
+        result["reason"] = "; ".join(notes + (extra_notes or []) + [result.get("reason", "")]).rstrip("; ")
+        if known_event:
+            # Expected deviation announced by the caller: suppress the alert
+            # (like a maintenance window) but keep the measured score visible.
+            result["suppressed_by_known_event"] = True
+            if result.get("is_anomaly"):
+                result["is_anomaly"] = False
+                result["reason"] += f"; suppressed: deviation expected during known_event={known_event}"
+        return result
+
     values = np.asarray(baseline_values, dtype=float)
     if values.size < 3:
-        return {
-            "is_anomaly": False,
-            "score": 0.0,
-            "method": "auto:insufficient_history",
-            "reason": "; ".join(notes + ["insufficient_history"]),
-        }
+        return finalize(
+            {
+                "is_anomaly": False,
+                "score": 0.0,
+                "method": "auto:insufficient_history",
+                "reason": "insufficient_history",
+            }
+        )
 
     trend = context.get("trend")
     if trend is not None:
@@ -226,8 +242,7 @@ def detect_anomaly(
         if expected_step is not None:
             trend_result = _trend_residual_detector(float(current), values, expected_step)
             if trend_result is not None:
-                trend_result["reason"] = "; ".join(notes + [trend_result["reason"]])
-                return trend_result
+                return finalize(trend_result)
 
     if values.size >= 5:
         # mad_detector already handles the mad==0 (constant-history) edge
@@ -235,11 +250,9 @@ def detect_anomaly(
         # enough points for a median/MAD to be meaningful.
         mad_result = mad_detector(float(current), values, threshold=3.5)
         mad_result["method"] = "auto:mad"
-        mad_result["reason"] = "; ".join(notes + [mad_result["reason"]])
-        return mad_result
+        return finalize(mad_result)
 
     # Fallback: too little history for a robust median/MAD (<5 points).
     result = zscore_detector(float(current), values, threshold=threshold)
     result["method"] = "auto:zscore"
-    result["reason"] = "; ".join(notes + [result["reason"]])
-    return result
+    return finalize(result)

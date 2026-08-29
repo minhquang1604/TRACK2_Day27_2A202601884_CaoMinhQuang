@@ -24,10 +24,17 @@ def validate_orders(df: pd.DataFrame, contract_path: str | Path) -> list[dict[st
 def detect_metric(
     current: float,
     history: Iterable[float],
-    *,
     method: str = "auto",
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Note: `method` and `context` are deliberately POSITIONAL-or-keyword.
+
+    docs/STUDENT_API.md documents this entry point as
+    `detect_metric(current, history, method="auto", context=None)`, so a
+    caller following the documented signature positionally --
+    `detect_metric(value, history, "zscore")` -- must work. Marking them
+    keyword-only here would raise TypeError for that documented call.
+    """
     return detect_anomaly(current, history, method=method, context=context)
 
 
