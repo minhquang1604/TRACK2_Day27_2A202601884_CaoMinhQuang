@@ -62,3 +62,38 @@ def test_trend_reversal_is_still_anomaly():
     history = [1000, 1020, 1040, 1060, 1080, 1100, 1120]
     result = detect_metric(850, history, method="auto", context={"metric_name": "row_count", "trend": 20})
     assert result["is_anomaly"] is True
+
+
+def test_auto_infers_same_weekday_segment_without_caller_prefiltering():
+    # `history` is RAW and unsegmented (mixed weekday/weekend), and the
+    # caller does NOT precompute `same_segment_history` -- only
+    # `day_of_week` is given. `auto` must derive the same-weekday baseline
+    # itself instead of requiring caller-side preprocessing (see
+    # scripts/run_baseline.py's original starter comment on this exact
+    # point). history is chronological (oldest first), ending the day
+    # before `current`; `current` here is a Saturday (day_of_week=5).
+    current_dow = 5
+    n_days = 21
+    weekday_scale, weekend_scale = 600, 258
+    # Period-4 jitter (coprime with the period-7 weekday cycle) so each
+    # weekday's points still get varied noise -- a period-7 jitter would
+    # collide with the weekday cycle and produce a degenerate zero-spread
+    # same-weekday segment.
+    noise_cycle = [-6, 4, -2, 7]
+    raw_history = []
+    for i in range(n_days):
+        days_before_current = n_days - i
+        dow = (current_dow - days_before_current) % 7
+        base = weekday_scale if dow < 5 else weekend_scale
+        raw_history.append(base + noise_cycle[i % len(noise_cycle)])
+
+    legit_saturday = detect_metric(
+        260, raw_history, method="auto", context={"metric_name": "row_count", "day_of_week": current_dow}
+    )
+    assert legit_saturday["is_anomaly"] is False
+    assert legit_saturday["reason"].startswith("baseline_source=inferred_same_weekday_from_history")
+
+    anomalous_saturday = detect_metric(
+        600, raw_history, method="auto", context={"metric_name": "row_count", "day_of_week": current_dow}
+    )
+    assert anomalous_saturday["is_anomaly"] is True

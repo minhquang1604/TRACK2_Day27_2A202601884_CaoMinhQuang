@@ -112,22 +112,62 @@ def _trend_residual_detector(
     }
 
 
+def _infer_same_weekday_segment(history: list[float], day_of_week: int) -> list[float] | None:
+    """Derive a same-weekday baseline directly from a raw, unsegmented daily
+    history series, when the caller did not pre-filter one.
+
+    Assumes `history` is a consecutive daily time series ending the day
+    before `current` (true for `data/history/metrics_history.csv` and for
+    any day-over-day metric log) -- so `history[-1]` is 1 day before
+    `current`, `history[-2]` is 2 days before, and so on. That lets us work
+    out each entry's weekday relative to `current`'s (`day_of_week`) without
+    needing per-point weekday metadata, and keep only the entries that share
+    `current`'s weekday. Returns None when there isn't enough history
+    (< 3 same-weekday points) for this to be worth it.
+    """
+    n = len(history)
+    if n < 10:
+        return None
+    segment = [
+        value
+        for k, value in enumerate(reversed(history))  # k=0 -> history[-1] (yesterday)
+        if (day_of_week - (k + 1)) % 7 == day_of_week % 7
+    ]
+    if len(segment) < 3:
+        return None
+    segment.reverse()  # restore chronological (oldest-first) order
+    return segment
+
+
 def _auto_baseline(history: Iterable[float], context: dict[str, Any] | None) -> tuple[list[float], str]:
     """Pick the best available comparison baseline.
 
-    Prefers `context["same_segment_history"]` (e.g. history filtered to the
-    same weekday/segment as `current`) when the caller supplies one, since
-    that is the whole point of segment-aware comparison: comparing a Saturday
-    to other Saturdays, not to a mixed Mon-Sun history. Falls back to the raw
-    `history` argument otherwise.
+    1. `context["same_segment_history"]` (e.g. history filtered to the same
+       weekday/segment as `current`) when the caller supplies one directly.
+    2. Otherwise, if `context["day_of_week"]` is given, infer the
+       same-weekday segment from the raw `history` series ourselves (see
+       `_infer_same_weekday_segment`) -- `auto` should not require the
+       caller to have already done the segmentation.
+    3. Otherwise, fall back to the raw `history` argument as-is.
+
+    Either way, this is the whole point of segment-aware comparison:
+    comparing a Saturday to other Saturdays, not to a mixed Mon-Sun history.
     """
+    history_list = [float(v) for v in history]
     if context:
         same_segment = context.get("same_segment_history")
         if same_segment is not None:
             candidate = [float(v) for v in same_segment]
             if len(candidate) >= 3:
                 return candidate, "same_segment_history"
-    return [float(v) for v in history], "raw_history"
+
+        day_of_week = context.get("day_of_week")
+        if day_of_week is not None:
+            inferred = _infer_same_weekday_segment(history_list, int(day_of_week))
+            if inferred is not None:
+                return inferred, "inferred_same_weekday_from_history"
+
+    return history_list, "raw_history"
 
 
 def detect_anomaly(
